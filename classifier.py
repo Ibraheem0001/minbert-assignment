@@ -1,4 +1,5 @@
 import time, random, numpy as np, argparse, sys, re, os
+import pandas as pd
 from types import SimpleNamespace
 
 import torch
@@ -13,7 +14,7 @@ from optimizer import AdamW
 from tqdm import tqdm
 
 
-TQDM_DISABLE=True
+TQDM_DISABLE=False
 # fix the random seed
 def seed_everything(seed=11711):
     random.seed(seed)
@@ -29,21 +30,24 @@ class BertSentClassifier(torch.nn.Module):
         super(BertSentClassifier, self).__init__()
         self.num_labels = config.num_labels
         self.bert = BertModel.from_pretrained('bert-base-uncased')
+        self.output_dropout_prob = self.bert.config.hidden_dropout_prob
+        self.dropout = torch.nn.Dropout(self.output_dropout_prob)
+        self.classifier_layer = torch.nn.Linear(config.hidden_size , self.num_labels)
 
-        # pretrain mode does not require updating bert paramters.
+        # freeze model does not require updating bert paramters.
         for param in self.bert.parameters():
-            if config.option == 'pretrain':
+            if config.option == 'freeze':
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
 
-        # todo
-        raise NotImplementedError
 
     def forward(self, input_ids, attention_mask):
         # todo
-        # the final bert contextualize embedding is the hidden state of [CLS] token (the first token)
-        raise NotImplementedError
+        # the final bert contextual embedding is the hidden state of the [CLS] token (the first token)
+        outputs = self.bert(input_ids, attention_mask)
+        output_dropout = self.dropout(outputs['pooler_output'])
+        return self.classifier_layer(output_dropout)
 
 # create a custom Dataset Class to be used for the dataloader
 class BertDataset(Dataset):
@@ -91,15 +95,17 @@ def create_data(filename, flag='train'):
     num_labels = {}
     data = []
 
-    with open(filename, 'r') as fp:
-        for line in fp:
-            label, org_sent = line.split(' ||| ')
-            sent = org_sent.lower().strip()
-            tokens = tokenizer.tokenize("[CLS] " + sent + " [SEP]")
-            label = int(label.strip())
-            if label not in num_labels:
-                num_labels[label] = len(num_labels)
-            data.append((sent, label, tokens))
+    df = pd.read_csv(filename, index_col=None)
+    labels = df['label']
+    orig_sents = df['data']
+    for label, orig_sent in zip(labels, orig_sents):
+        sent = orig_sent.lower().strip()
+        tokens = tokenizer.tokenize("[CLS] " + sent + " [SEP]")
+        label = int(label)
+        if label not in num_labels:
+            num_labels[label] = len(num_labels)
+        data.append((sent, label, tokens))
+
     print(f"load {len(data)} data from {filename}")
     if flag == 'train':
         return data, len(num_labels)
@@ -226,43 +232,43 @@ def test(args):
         print(f"load model from {args.filepath}")
         dev_data = create_data(args.dev, 'valid')
         dev_dataset = BertDataset(dev_data, args)
+        # DO NOT SHUFFLE
         dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=dev_dataset.collate_fn)
 
         test_data = create_data(args.test, 'test')
         test_dataset = BertDataset(test_data, args)
+        # DO NOT SHUFFLE
         test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
 
         dev_acc, dev_f1, dev_pred, dev_true, dev_sents = model_eval(dev_dataloader, model, device)
         test_acc, test_f1, test_pred, test_true, test_sents = model_eval(test_dataloader, model, device)
 
-        with open(args.dev_out, "w+") as f:
-            print(f"dev acc :: {dev_acc :.3f}")
-            for s, p in zip(dev_sents, dev_pred):
-                f.write(f"{p} ||| {s}\n")
+        print(f"dev acc :: {dev_acc :.3f}")
+        df = pd.DataFrame({'ID': list(range(len(dev_sents))), 'label': dev_pred})
+        df.to_csv(args.dev_out, index=None)
 
-        with open(args.test_out, "w+") as f:
-            print(f"test acc :: {test_acc :.3f}")
-            for s, p in zip(test_sents, test_pred):
-                f.write(f"{p} ||| {s}\n")
+        print(f"test acc :: {test_acc :.3f}")
+        df = pd.DataFrame({'ID': list(range(len(test_sents))), 'label': test_pred})
+        df.to_csv(args.test_out, index=None)
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train", type=str, default="data/cfimdb-train.txt")
-    parser.add_argument("--dev", type=str, default="data/cfimdb-dev.txt")
-    parser.add_argument("--test", type=str, default="data/cfimdb-test.txt")
+    parser.add_argument("--train", type=str, default="data/cfimdb-train.csv")
+    parser.add_argument("--dev", type=str, default="data/cfimdb-dev.csv")
+    parser.add_argument("--test", type=str, default="data/cfimdb-test.csv")
     parser.add_argument("--seed", type=int, default=11711)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--option", type=str,
-                        help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
-                        choices=('pretrain', 'finetune'), default="pretrain")
+                        help='freeze: the BERT parameters are frozen; finetune: BERT parameters are updated',
+                        choices=('freeze', 'finetune'), default="freeze")
     parser.add_argument("--use_gpu", action='store_true')
-    parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.txt")
-    parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
+    parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.csv")
+    parser.add_argument("--test_out", type=str, default="cfimdb-test-output.csv")
 
     # hyper parameters
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
-    parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
+    parser.add_argument("--lr", type=float, help="learning rate, default lr for 'freeze': 1e-3, 'finetune': 1e-5",
                         default=1e-5)
 
     args = parser.parse_args()

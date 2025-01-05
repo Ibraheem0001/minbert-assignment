@@ -1,8 +1,19 @@
+# from transformers import BertTokenizer, BertModel
+# tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+# model = BertModel.from_pretrained('bert-base-uncased')
+# sentence = "Hello"
+# inputs = tokenizer(sentence, return_tensors='pt', padding=True, truncation=True, max_length=512)
+# print(inputs)
+# # #------------------------------------------------------------------------------------------------#
+
 import torch
 from bert import BertModel
+
 sanity_data = torch.load("./sanity_check.data")
 # text_batch = ["hello world", "hello neural network for NLP"]
+
 # tokenizer here
+# above text_batch is tokenized using sentencepiece (refer to BERT paper for details)
 sent_ids = torch.tensor([[101, 7592, 2088, 102, 0, 0, 0, 0],
                          [101, 7592, 15756, 2897, 2005, 17953, 2361, 102]])
 att_mask = torch.tensor([[1, 1, 1, 1, 0, 0, 0, 0],[1, 1, 1, 1, 1, 1, 1, 1]])
